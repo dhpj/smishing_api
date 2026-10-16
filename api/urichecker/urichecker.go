@@ -169,12 +169,12 @@ func CheckUri(c *fasthttp.RequestCtx) {
 			}(targetURI)
 
 			// 2. Gemini 2.5 Flash 검사 스레드 출발
-			go func(url string) {
-				malicious, err := checkGeminiFlash(url)
-				resultCh <- scanResult{isMalicious: malicious, err: err, source: "gemini"}
-			}(targetURI)
+			// go func(url string) {
+			// 	malicious, err := checkGeminiFlash(url)
+			// 	resultCh <- scanResult{isMalicious: malicious, err: err, source: "gemini"}
+			// }(targetURI)
 
-			var urlscanMalicious, geminiMalicious bool
+			// var urlscanMalicious, geminiMalicious bool
 
 			var finalMalicious bool
 
@@ -377,88 +377,88 @@ func checkLocalUri(uri string) int {
 } // 🚀 [교정] 무너졌던 중괄호 스코프 완전 마감 처리 완료!
 
 // 💡 4단계: Gemini 2.5 Flash AI 정밀 추론
-func checkGeminiFlash(targetUrl string) (bool, error) {
-	var stdlog = configs.Stdlog
-	var errlog = configs.Stdlog
+// func checkGeminiFlash(targetUrl string) (bool, error) {
+// 	var stdlog = configs.Stdlog
+// 	var errlog = configs.Stdlog
 
-	// 🚨 형님 환경의 config.ini 등에 GEMINI_API_KEY를 추가해 주십쇼
-	apiKey := configs.Conf.GEMINI_API_KEY
-	if apiKey == "" {
-		return false, fmt.Errorf("설정 파일에 GEMINI_API_KEY가 없습니다")
-	}
+// 	// 🚨 형님 환경의 config.ini 등에 GEMINI_API_KEY를 추가해 주십쇼
+// 	apiKey := configs.Conf.GEMINI_API_KEY
+// 	if apiKey == "" {
+// 		return false, fmt.Errorf("설정 파일에 GEMINI_API_KEY가 없습니다")
+// 	}
 
-	apiUrl := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
+// 	apiUrl := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
-	// 프롬프트: 스미싱/피싱 여부를 판단하고 무조건 JSON 형태로만 응답하도록 강제
-	prompt := fmt.Sprintf(`Analyze this URL for smishing, phishing, or malicious intent: "%s".
-	Consider URL shortening, obfuscation, brand spoofing, and suspicious TLDs.
-	Respond STRICTLY in valid JSON format with exactly two keys:
-	"malicious": boolean (true if malicious/suspicious, false if safe),
-	"reason": string (brief explanation)`, targetUrl)
+// 	// 프롬프트: 스미싱/피싱 여부를 판단하고 무조건 JSON 형태로만 응답하도록 강제
+// 	prompt := fmt.Sprintf(`Analyze this URL for smishing, phishing, or malicious intent: "%s".
+// 	Consider URL shortening, obfuscation, brand spoofing, and suspicious TLDs.
+// 	Respond STRICTLY in valid JSON format with exactly two keys:
+// 	"malicious": boolean (true if malicious/suspicious, false if safe),
+// 	"reason": string (brief explanation)`, targetUrl)
 
-	reqBody := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{"text": prompt},
-				},
-			},
-		},
-		// 🚀 JSON 응답 강제 옵션 (파싱 에러 원천 차단)
-		"generationConfig": map[string]interface{}{
-			"responseMimeType": "application/json",
-		},
-	}
+// 	reqBody := map[string]interface{}{
+// 		"contents": []map[string]interface{}{
+// 			{
+// 				"parts": []map[string]interface{}{
+// 					{"text": prompt},
+// 				},
+// 			},
+// 		},
+// 		// 🚀 JSON 응답 강제 옵션 (파싱 에러 원천 차단)
+// 		"generationConfig": map[string]interface{}{
+// 			"responseMimeType": "application/json",
+// 		},
+// 	}
 
-	bodyBytes, _ := json.Marshal(reqBody)
-	client := &http.Client{Timeout: 10 * time.Second} // Flash 모델이므로 10초면 매우 넉넉함
+// 	bodyBytes, _ := json.Marshal(reqBody)
+// 	client := &http.Client{Timeout: 10 * time.Second} // Flash 모델이므로 10초면 매우 넉넉함
 
-	req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return false, fmt.Errorf("Gemini POST Request 생성 실패: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+// 	req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(bodyBytes))
+// 	if err != nil {
+// 		return false, fmt.Errorf("Gemini POST Request 생성 실패: %v", err)
+// 	}
+// 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("Gemini API 통신 에러: %v", err)
-	}
-	defer resp.Body.Close()
+// 	resp, err := client.Do(req)
+// 	if err != nil {
+// 		return false, fmt.Errorf("Gemini API 통신 에러: %v", err)
+// 	}
+// 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("Gemini API 거부됨 (Status: %d, Body: %s)", resp.StatusCode, string(bodyBytes))
-	}
+// 	if resp.StatusCode != http.StatusOK {
+// 		bodyBytes, _ := io.ReadAll(resp.Body)
+// 		return false, fmt.Errorf("Gemini API 거부됨 (Status: %d, Body: %s)", resp.StatusCode, string(bodyBytes))
+// 	}
 
-	// 구글 AI 응답 구조체 맵핑
-	var geminiResp struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
+// 	// 구글 AI 응답 구조체 맵핑
+// 	var geminiResp struct {
+// 		Candidates []struct {
+// 			Content struct {
+// 				Parts []struct {
+// 					Text string `json:"text"`
+// 				} `json:"parts"`
+// 			} `json:"content"`
+// 		} `json:"candidates"`
+// 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return false, fmt.Errorf("Gemini JSON 디코딩 에러: %v", err)
-	}
+// 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+// 		return false, fmt.Errorf("Gemini JSON 디코딩 에러: %v", err)
+// 	}
 
-	// 결과 파출
-	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
-		rawJsonText := geminiResp.Candidates[0].Content.Parts[0].Text
+// 	// 결과 파출
+// 	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
+// 		rawJsonText := geminiResp.Candidates[0].Content.Parts[0].Text
 		
-		var aiResult struct {
-			Malicious bool   `json:"malicious"`
-			Reason    string `json:"reason"`
-		}
+// 		var aiResult struct {
+// 			Malicious bool   `json:"malicious"`
+// 			Reason    string `json:"reason"`
+// 		}
 
-		if err := json.Unmarshal([]byte(rawJsonText), &aiResult); err == nil {
-			stdlog.Printf("🤖 [Gemini 2.5 Flash] 스캔 완료 - 악성여부: %t, 이유: %s", aiResult.Malicious, aiResult.Reason)
-			return aiResult.Malicious, nil
-		}
-	}
+// 		if err := json.Unmarshal([]byte(rawJsonText), &aiResult); err == nil {
+// 			stdlog.Printf("🤖 [Gemini 2.5 Flash] 스캔 완료 - 악성여부: %t, 이유: %s", aiResult.Malicious, aiResult.Reason)
+// 			return aiResult.Malicious, nil
+// 		}
+// 	}
 
-	return false, fmt.Errorf("Gemini 응답 구조 이상")
-}
+// 	return false, fmt.Errorf("Gemini 응답 구조 이상")
+// }

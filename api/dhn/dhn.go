@@ -1,15 +1,19 @@
 package dhn
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"log"
+	"net/http"
 	"runtime/debug"
+	"time"
+	"strings"
 
-	uc "mycs/api/urichecker"
 	ss "mycs/api/smishing"
+	uc "mycs/api/urichecker"
 	"mycs/configs"
 	"mycs/configs/databasepool"
 
@@ -22,12 +26,25 @@ const (
 	certEmail   = "dhn@dhncorp.co.kr"
 )
 
+// 💡 KISA 스미싱 API 응답 구조체
+type KisaSmishingRes struct {
+	ResCode  int    `json:"resCode"`
+	ResMsg   string `json:"resMsg"`
+	ResDatas []struct {
+		RecvUrl  string `json:"recvUrl"`
+		SmStatus string `json:"smStatus"` // "스미싱", "안전", "판정 취소"
+	} `json:"resDatas"`
+}
+
 func DhnProc() {
 	configs.Stdlog.Println("=== 통합 API 시스템 구동 시작 ===")
 
 	go GoogleProc()
 
 	go SmishingProc()
+	// 🚀 KISA 비동기 수집 엔진 스레드 출발
+	go KisaSmishingCollector()
+
 }
 
 func GoogleProc() {
@@ -208,4 +225,114 @@ func authMiddleware2(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		}
 
 	}
+}
+
+// 💡 1. 백그라운드에서 주기적으로 도는 스케줄러 고루틴
+func KisaSmishingCollector() {
+	configs.Stdlog.Println("KISA 스미싱 정보 수집 스케줄러 시작")
+	
+	// 💡 1시간 주기로 변경 완료!
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	// 서버가 실행되자마자 1회 긁어오기
+	fetchKisaSmishing()
+
+	for {
+		<-ticker.C
+		fetchKisaSmishing()
+	}
+}
+
+// 💡 2. 실제 KISA API를 호출하고 페이징 처리하는 워커
+func fetchKisaSmishing() {
+	configs.Stdlog.Println("KISA 스미싱 정보 수집 시작")
+	// 🚨 형님의 configs 세팅에 URL과 토큰 추가 필요
+	apiUrl := configs.Conf.KISA_SMISHING_URL 
+	token := configs.Conf.KISA_API_TOKEN
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	for {
+		// stime 생략을 위해 빈 맵 전송 (마지막 조회 이후 데이터 자동 수신)
+		reqBody := map[string]interface{}{}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req, err := http.NewRequest("POST", apiUrl, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			configs.Stdlog.Println("KISA Request 생성 에러:", err)
+			break
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			configs.Stdlog.Println("KISA API 통신 에러:", err)
+			break
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			configs.Stdlog.Println("KISA API 상태코드 에러:", resp.StatusCode)
+			resp.Body.Close()
+			break
+		}
+
+		var kisaRes KisaSmishingRes
+		if err := json.NewDecoder(resp.Body).Decode(&kisaRes); err != nil {
+			configs.Stdlog.Println("KISA JSON 디코딩 에러:", err)
+			resp.Body.Close()
+			break
+		}
+		resp.Body.Close()
+
+		if kisaRes.ResCode != 0 {
+			configs.Stdlog.Printf("KISA API 응답 에러 (코드: %d, 메시지: %s)\n", kisaRes.ResCode, kisaRes.ResMsg)
+			break
+		}
+
+		count := len(kisaRes.ResDatas)
+		if count > 0 {
+			// 🚀 DB Bulk Upsert (수집된 URL 1000건을 한방 쿼리로 밀어넣기)
+			var queryBuilder strings.Builder
+			queryBuilder.WriteString("INSERT INTO WEB_RISK (uri, status) VALUES ")
+			
+			var values []interface{}
+			var placeholders []string
+			
+			for _, data := range kisaRes.ResDatas {
+				// 기본값 0(정상/판정 취소), "스미싱"일 경우만 1
+				status := 0 
+				if data.SmStatus == "스미싱" {
+					status = 1
+				}
+				
+				placeholders = append(placeholders, "(?, ?)")
+				values = append(values, data.RecvUrl, status)
+			}
+			
+			queryBuilder.WriteString(strings.Join(placeholders, ","))
+			// uri가 이미 존재하면 status 값만 최신으로 덮어쓰기
+			queryBuilder.WriteString(" ON DUPLICATE KEY UPDATE status = VALUES(status)")
+			
+			_, err := databasepool.DB.Exec(queryBuilder.String(), values...)
+			if err != nil {
+				configs.Stdlog.Println("KISA DB 적재 에러:", err)
+			} else {
+				configs.Stdlog.Printf("KISA 데이터 %d건 DB 적재/갱신 완료 (첫 URL: %s)", count, kisaRes.ResDatas[0].RecvUrl)
+			}
+		}
+
+		// 💡 핵심 로직: 반환 데이터가 1,000건이면 다음 페이지가 무조건 있다는 뜻
+		if count == 1000 {
+			configs.Stdlog.Println("KISA 스미싱 데이터 1,000건 초과. 다음 페이지 연속 조회 진행...")
+			time.Sleep(500 * time.Millisecond) // API 서버 보호용 짧은 대기 후 루프 이어서 진행 (continue)
+			continue
+		} else {
+			// 1,000건 미만이면 남은 데이터가 없으므로 루프 탈출 (다음 Ticker 주기까지 대기)
+			break
+		}
+	}
+	configs.Stdlog.Println("KISA 스미싱 정보 수집 끝")
 }

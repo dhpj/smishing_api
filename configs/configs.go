@@ -33,6 +33,9 @@ type Config struct {
 	URLSCAN_API_KEY    string 
 
 	GEMINI_API_KEY     string
+
+	KISA_SMISHING_URL  string
+	KISA_API_TOKEN     string
 }
 
 var (
