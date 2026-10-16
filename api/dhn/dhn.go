@@ -334,5 +334,5 @@ func fetchKisaSmishing() {
 			break
 		}
 	}
-	configs.Stdlog.Println("KISA 스미싱 정보 수집 끝")
+	configs.Stdlog.Println("KISA 스미싱 정보 수집 끋")
 }
